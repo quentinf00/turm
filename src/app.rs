@@ -45,7 +45,9 @@ pub enum Dialog {
         command: String,
         output: String,
     },
-    Help,
+    Help {
+        scroll: u16,
+    },
 }
 
 struct CommandFailure {
@@ -106,6 +108,8 @@ pub struct App {
     job_list_height: u16,
     job_list_area: Rect,
     job_output_area: Rect,
+    /// Number of help dialog lines visible at once, updated on every draw.
+    help_viewport_height: u16,
     pending_input_event: Option<Event>,
     /// Ids of jobs toggled with <space> (or committed from a visual selection).
     marked_jobs: HashSet<String>,
@@ -213,7 +217,7 @@ const KEYMAPS: &[(&str, &[(&str, &str)])] = &[
     (
         "General",
         &[
-            ("?", "show this help"),
+            ("?", "show this help (j/k, pgup/pgdown to scroll)"),
             ("enter/esc", "confirm/close dialog"),
             ("q", "quit"),
         ],
@@ -253,6 +257,7 @@ impl App {
             job_list_height: 0,
             job_list_area: Rect::default(),
             job_output_area: Rect::default(),
+            help_viewport_height: 0,
             pending_input_event: None,
             marked_jobs: HashSet::new(),
             visual_anchor: None,
@@ -475,12 +480,32 @@ impl App {
                                 input.handle_event(&Event::Key(key));
                             }
                         },
-                        Dialog::Help => match key.code {
-                            KeyCode::Enter | KeyCode::Esc | KeyCode::Char('?') => {
-                                close_dialog = true;
+                        Dialog::Help { scroll } => {
+                            let viewport = self.help_viewport_height.max(1);
+                            let max_scroll = (help_lines().len() as u16).saturating_sub(viewport);
+                            let page = viewport.saturating_sub(1).max(1);
+                            *scroll = min(*scroll, max_scroll);
+                            match key.code {
+                                KeyCode::Enter | KeyCode::Esc | KeyCode::Char('?') => {
+                                    close_dialog = true;
+                                }
+                                KeyCode::Char('j') | KeyCode::Down => {
+                                    *scroll = min(scroll.saturating_add(1), max_scroll);
+                                }
+                                KeyCode::Char('k') | KeyCode::Up => {
+                                    *scroll = scroll.saturating_sub(1);
+                                }
+                                KeyCode::PageDown => {
+                                    *scroll = min(scroll.saturating_add(page), max_scroll);
+                                }
+                                KeyCode::PageUp => {
+                                    *scroll = scroll.saturating_sub(page);
+                                }
+                                KeyCode::Char('g') | KeyCode::Home => *scroll = 0,
+                                KeyCode::Char('G') | KeyCode::End => *scroll = max_scroll,
+                                _ => {}
                             }
-                            _ => {}
-                        },
+                        }
                         Dialog::CommandError { .. } => match key.code {
                             KeyCode::Enter | KeyCode::Esc => {
                                 close_dialog = true;
@@ -585,7 +610,7 @@ impl App {
                             self.job_output_offset = 0;
                             self.job_output_anchor = ScrollAnchor::Bottom;
                         }
-                        KeyCode::Char('?') => self.dialog = Some(Dialog::Help),
+                        KeyCode::Char('?') => self.dialog = Some(Dialog::Help { scroll: 0 }),
                         KeyCode::Char(' ') => self.toggle_mark(),
                         KeyCode::Char('v') => self.toggle_visual_mode(),
                         KeyCode::Esc => self.clear_selection(),
@@ -939,6 +964,9 @@ impl App {
 
         f.render_widget(log, log_area);
 
+        let help_height = (help_lines().len() as u16).saturating_add(2);
+        self.help_viewport_height = dialog_area(help_height, f.area()).height.saturating_sub(2);
+
         if let Some(dialog) = &self.dialog {
             match dialog {
                 Dialog::ConfirmCancelJob(ids) => {
@@ -1035,35 +1063,24 @@ impl App {
                     let cursor_y = inner.y;
                     f.set_cursor_position((cursor_x, cursor_y));
                 }
-                Dialog::Help => {
-                    let key_width = KEYMAPS
-                        .iter()
-                        .flat_map(|(_, keys)| keys.iter())
-                        .map(|(key, _)| key.chars().count())
-                        .max()
-                        .unwrap_or(0);
-                    let mut rows = Vec::new();
-                    for (i, (section, keys)) in KEYMAPS.iter().enumerate() {
-                        if i > 0 {
-                            rows.push(Line::default());
-                        }
-                        rows.push(Line::from(Span::styled(
-                            *section,
-                            Style::default().fg(Color::Yellow),
-                        )));
-                        rows.extend(keys.iter().map(|(key, description)| {
-                            Line::from(vec![
-                                Span::styled(
-                                    format!("  {key:<key_width$}  "),
-                                    Style::default().fg(Color::Blue),
-                                ),
-                                Span::raw(*description),
-                            ])
-                        }));
-                    }
-                    let height = (rows.len() as u16).saturating_add(2);
+                Dialog::Help { scroll } => {
+                    let lines = help_lines();
+                    let max_scroll = (lines.len() as u16).saturating_sub(self.help_viewport_height);
+                    let scroll = min(*scroll, max_scroll);
+                    let title = if max_scroll > 0 {
+                        format!(
+                            "Help [{}-{}/{}] (j/k, pgup/pgdown to scroll)",
+                            scroll + 1,
+                            scroll + self.help_viewport_height,
+                            lines.len()
+                        )
+                    } else {
+                        "Help".to_string()
+                    };
+                    let content =
+                        Text::from(lines.into_iter().skip(scroll as usize).collect::<Vec<_>>());
 
-                    render_dialog(f, "Help", Color::Green, height, Text::from(rows), None);
+                    render_dialog(f, &title, Color::Green, help_height, content, None);
                 }
                 Dialog::CommandError { command, output } => {
                     let dialog_text = format!("Command: {command}\n\n{output}");
@@ -1086,6 +1103,36 @@ impl App {
             }
         }
     }
+}
+
+/// Lines of the help dialog, built from `KEYMAPS`.
+fn help_lines() -> Vec<Line<'static>> {
+    let key_width = KEYMAPS
+        .iter()
+        .flat_map(|(_, keys)| keys.iter())
+        .map(|(key, _)| key.chars().count())
+        .max()
+        .unwrap_or(0);
+    let mut lines = Vec::new();
+    for (i, (section, keys)) in KEYMAPS.iter().enumerate() {
+        if i > 0 {
+            lines.push(Line::default());
+        }
+        lines.push(Line::from(Span::styled(
+            *section,
+            Style::default().fg(Color::Yellow),
+        )));
+        lines.extend(keys.iter().map(|(key, description)| {
+            Line::from(vec![
+                Span::styled(
+                    format!("  {key:<key_width$}  "),
+                    Style::default().fg(Color::Blue),
+                ),
+                Span::raw(*description),
+            ])
+        }));
+    }
+    lines
 }
 
 fn dialog_area(height: u16, viewport: Rect) -> Rect {
