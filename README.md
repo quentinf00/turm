@@ -64,6 +64,8 @@ turm completion fish | source
 
 ## Selecting multiple jobs
 
+Press `?` inside `turm` to see all key bindings.
+
 Press `space` to toggle the selection of the job under the cursor, or `v` to start a visual selection that follows the cursor (`j`/`k`, `g`/`G`); press `v` or `space` again to keep it and continue selecting elsewhere.
 `esc` clears the selection.
 When jobs are selected, cancel (`c`/`C`), hold/release (`H`/`R`), time limit (`t`) and copy (`yj`/`yo`/`ye`) apply to all of them; otherwise they apply to the job under the cursor.

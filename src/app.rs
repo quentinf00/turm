@@ -45,6 +45,7 @@ pub enum Dialog {
         command: String,
         output: String,
     },
+    Help,
 }
 
 struct CommandFailure {
@@ -170,6 +171,54 @@ pub(crate) enum MouseScrollTarget {
 
 const SCANCEL_SIGNALS: &[&str] = &["TERM", "INT", "HUP", "USR1", "USR2", "STOP", "CONT", "KILL"];
 const DIALOG_WIDTH: u16 = 80;
+
+/// All key bindings, grouped by section, as shown in the help dialog (`?`).
+const KEYMAPS: &[(&str, &[(&str, &str)])] = &[
+    (
+        "Navigation",
+        &[
+            ("j/k, ⏶/⏷", "next/previous job"),
+            ("g/G", "first/last job"),
+            ("ctrl+d/ctrl+u", "half page down/up"),
+        ],
+    ),
+    (
+        "Selection",
+        &[
+            ("space", "toggle job selection"),
+            ("v", "visual selection (again to keep it)"),
+            ("esc", "clear selection"),
+        ],
+    ),
+    (
+        "Actions (on selected jobs, or the job under the cursor)",
+        &[
+            ("c", "cancel"),
+            ("C", "send signal"),
+            ("H/R", "hold/release"),
+            ("t", "set time limit"),
+            ("yj", "copy job id"),
+            ("yo/ye", "copy stdout/stderr path"),
+        ],
+    ),
+    (
+        "Output",
+        &[
+            ("o", "toggle stdout/stderr"),
+            ("w", "toggle text wrap"),
+            ("pgup/pgdown", "scroll (shift: faster)"),
+            ("home/end", "top/bottom"),
+        ],
+    ),
+    (
+        "General",
+        &[
+            ("?", "show this help"),
+            ("enter/esc", "confirm/close dialog"),
+            ("q", "quit"),
+        ],
+    ),
+];
 
 impl App {
     pub fn new(
@@ -426,6 +475,12 @@ impl App {
                                 input.handle_event(&Event::Key(key));
                             }
                         },
+                        Dialog::Help => match key.code {
+                            KeyCode::Enter | KeyCode::Esc | KeyCode::Char('?') => {
+                                close_dialog = true;
+                            }
+                            _ => {}
+                        },
                         Dialog::CommandError { .. } => match key.code {
                             KeyCode::Enter | KeyCode::Esc => {
                                 close_dialog = true;
@@ -530,6 +585,7 @@ impl App {
                             self.job_output_offset = 0;
                             self.job_output_anchor = ScrollAnchor::Bottom;
                         }
+                        KeyCode::Char('?') => self.dialog = Some(Dialog::Help),
                         KeyCode::Char(' ') => self.toggle_mark(),
                         KeyCode::Char('v') => self.toggle_visual_mode(),
                         KeyCode::Esc => self.clear_selection(),
@@ -637,19 +693,14 @@ impl App {
             ]
         } else {
             vec![
+                ("?", "help"),
                 ("q", "quit"),
-                ("⏶/⏷", "navigate"),
-                ("pgup/pgdown", "scroll"),
-                ("home/end", "top/bottom"),
-                ("space/v", "select/visual"),
-                ("esc", "cancel"),
-                ("enter", "confirm"),
+                ("space/v", "select"),
                 ("c/C", "cancel/signal"),
                 ("H/R", "hold/release"),
-                ("t", "set time limit"),
-                ("yj/yo/ye", "copy id/stdout/stderr"),
-                ("o", "toggle stdout/stderr"),
-                ("w", "toggle text wrap"),
+                ("t", "time limit"),
+                ("y", "copy"),
+                ("o", "stdout/stderr"),
             ]
         };
         let blue_style = Style::default().fg(Color::Blue);
@@ -983,6 +1034,36 @@ impl App {
                         .min(inner.x.saturating_add(inner.width.saturating_sub(1)));
                     let cursor_y = inner.y;
                     f.set_cursor_position((cursor_x, cursor_y));
+                }
+                Dialog::Help => {
+                    let key_width = KEYMAPS
+                        .iter()
+                        .flat_map(|(_, keys)| keys.iter())
+                        .map(|(key, _)| key.chars().count())
+                        .max()
+                        .unwrap_or(0);
+                    let mut rows = Vec::new();
+                    for (i, (section, keys)) in KEYMAPS.iter().enumerate() {
+                        if i > 0 {
+                            rows.push(Line::default());
+                        }
+                        rows.push(Line::from(Span::styled(
+                            *section,
+                            Style::default().fg(Color::Yellow),
+                        )));
+                        rows.extend(keys.iter().map(|(key, description)| {
+                            Line::from(vec![
+                                Span::styled(
+                                    format!("  {key:<key_width$}  "),
+                                    Style::default().fg(Color::Blue),
+                                ),
+                                Span::raw(*description),
+                            ])
+                        }));
+                    }
+                    let height = (rows.len() as u16).saturating_add(2);
+
+                    render_dialog(f, "Help", Color::Green, height, Text::from(rows), None);
                 }
                 Dialog::CommandError { command, output } => {
                     let dialog_text = format!("Command: {command}\n\n{output}");
